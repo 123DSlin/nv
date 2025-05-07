@@ -3,30 +3,109 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Network Verifier</title>
+    <title>Network Verification System</title>
     <link rel="stylesheet" href="/static/css/style.css">
     <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
 </head>
 <body>
     <div class="container">
-        <h1>Network Configuration Verifier</h1>
+        <h1>Network Verification System</h1>
         
+        <!-- Snapshot Selection Section -->
+        <div class="snapshot-section">
+            <label for="snapshot-select" class="snapshot-label">历史快照：</label>
+            <select id="snapshot-select"></select>
+            <button id="load-snapshot-btn" class="verify-btn">加载</button>
+        </div>
+
+        <!-- Upload Section -->
         <div class="upload-section">
+            <h2>Upload Configuration Files</h2>
             <form id="upload-form" enctype="multipart/form-data">
                 <div class="file-input-container">
-                    <label for="config-files">Select Configuration Files:</label>
-                    <input type="file" id="config-files" name="files" multiple accept=".cfg,.txt">
+                    <input type="file" name="files" multiple accept=".cfg,.txt" id="file-input" webkitdirectory directory>
+                    <button type="submit" id="upload-button">Upload</button>
                 </div>
-                <button type="submit">Upload and Verify</button>
             </form>
         </div>
-        
-        <div class="results-section" style="display: none;">
-            <div id="results"></div>
-            <div id="topology">
-                <h3>Network Topology</h3>
-                <div id="networkGraph" style="width: 100%; height: 600px;"></div>
+
+        <!-- Topology Display Section -->
+        <div class="topology-section">
+            <div style="display:flex;align-items:center;justify-content:space-between;">
+                <h2>Network Topology</h2>
+                <div>
+                    <button id="toggle-hierarchical-btn" class="verify-btn" style="margin-right:1.5rem;">切换层次布局</button>
+                    <button id="clear-highlight-btn" class="verify-btn">Clear</button>
+                </div>
             </div>
+            <div id="networkGraph" class="network-graph"></div>
+        </div>
+
+        <!-- Verification Controls -->
+        <div class="verification-controls">
+            <div class="verification-tabs" style="display: flex; gap: 1rem; margin-bottom: 1rem;">
+                <button id="tab-reachability" class="verify-btn tab-btn tab-active" type="button">可达性验证</button>
+                <button id="tab-isolation" class="verify-btn tab-btn" type="button">隔离性验证</button>
+                <button id="tab-path" class="verify-btn tab-btn" type="button">路径定位</button>
+                <button id="tab-disjoint" class="verify-btn tab-btn" type="button">不相交路径</button>
+                <button id="tab-loop" class="verify-btn tab-btn" type="button">转发环路检测</button>
+            </div>
+            <h2 id="verification-title">Verification可达性</h2>
+            <div id="node-selection-hint" style="margin-bottom: 1rem; color: #2563eb; font-weight: 500;"></div>
+            <div class="node-selection">
+                <div class="node-info">
+                    <span class="node-label">Source Node:</span>
+                    <span id="source-node">未选择</span>
+                    <button class="select-btn" id="select-source-btn" onclick="startSelectNode('source')">选择</button>
+                    <button class="clear-btn" id="clear-source-btn" onclick="clearSourceNode()" style="display:none;">重新选择</button>
+                </div>
+                <div class="node-info">
+                    <span class="node-label">Target Node:</span>
+                    <span id="target-node">未选择</span>
+                    <button class="select-btn" id="select-target-btn" onclick="startSelectNode('target')">选择</button>
+                    <button class="clear-btn" id="clear-target-btn" onclick="clearTargetNode()" style="display:none;">重新选择</button>
+                </div>
+                <div class="node-info" id="path-strategy-container" style="display:none;">
+                    <span class="node-label">路径选择策略:</span>
+                    <select id="path-strategy" class="strategy-select">
+                        <option value="shortest">最短路径</option>
+                        <option value="core_preferred">优先核心设备</option>
+                        <option value="border_preferred">优先边界设备</option>
+                        <option value="redundant">冗余路径</option>
+                    </select>
+                </div>
+                <div class="node-info" id="disjoint-mode-container" style="display:none;">
+                    <span class="node-label">不相交类型:</span>
+                    <select id="disjoint-mode" class="strategy-select">
+                        <option value="node">节点不相交</option>
+                        <option value="edge">边不相交</option>
+                    </select>
+                </div>
+                <div class="node-info" id="loop-mode-container" style="display:none;">
+                    <span class="node-label">检测模式:</span>
+                    <select id="loop-mode" class="strategy-select">
+                        <option value="global">全局检测</option>
+                        <option value="node">指定节点</option>
+                    </select>
+                </div>
+                <div class="node-info" id="loop-node-container" style="display:none;">
+                    <span class="node-label">检测节点:</span>
+                    <span id="loop-node">未选择</span>
+                    <button class="select-btn" id="select-loop-node-btn" onclick="startSelectNode('loop')">选择</button>
+                    <button class="clear-btn" id="clear-loop-node-btn" onclick="clearLoopNode()" style="display:none;">重新选择</button>
+                </div>
+            </div>
+            <div class="verification-actions">
+                <button id="verify-action-btn" class="verify-btn" disabled>验证可达性</button>
+                <button id="verify-disjoint-btn" class="verify-btn" style="display:none;">验证不相交路径</button>
+                <button id="verify-loop-btn" class="verify-btn" style="display:none;">检测环路</button>
+            </div>
+        </div>
+
+        <!-- Results Section -->
+        <div class="results-section" style="display: none;">
+            <h2>Verification Results</h2>
+            <div id="results"></div>
         </div>
     </div>
     <script src="/static/js/main.js"></script>

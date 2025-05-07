@@ -41,9 +41,8 @@ class ConfigLoader:
         # Update interfaces with neighbor information
         for interface in interfaces:
             for neighbor in bgp_neighbors:
-                if interface.get('ip_address') == neighbor.get('local_ip'):
-                    interface['neighbor'] = neighbor['neighbor_name']
-                    interface['neighbor_interface'] = neighbor['neighbor_interface']
+                if interface.get('ip_address') == neighbor.get('ip'):
+                    interface['neighbor'] = neighbor
         
         # Build configuration
         config = {
@@ -58,63 +57,95 @@ class ConfigLoader:
         self.configs[device_name] = config
         return self.configs
     
-    def _extract_interfaces(self, content: str) -> List[Dict[str, str]]:
+    def _extract_interfaces(self, content: str) -> List[Dict[str, Any]]:
         """Extract interface information from configuration."""
         interfaces = []
-        interface_pattern = r'interface\s+(\S+)\s*\n(.*?)(?=^!|\Z)'
+        current_interface = None
         
-        for match in re.finditer(interface_pattern, content, re.MULTILINE | re.DOTALL):
-            interface_name = match.group(1)
-            interface_config = match.group(2)
+        for line in content.split('\n'):
+            line = line.strip()
             
-            # Skip loopback interfaces
-            if 'Loopback' in interface_name:
-                continue
+            # Start of interface configuration
+            if line.startswith('interface'):
+                if current_interface:
+                    interfaces.append(current_interface)
+                current_interface = {
+                    'name': line.split()[1],
+                    'ip_address': '',
+                    'subnet_mask': '',
+                    'neighbor': {},
+                    'status': 'down'
+                }
             
-            # Extract IP address
-            ip_match = re.search(r'ip address\s+(\S+)\s+(\S+)', interface_config)
-            if ip_match:
-                interfaces.append({
-                    'name': interface_name,
-                    'ip_address': ip_match.group(1),
-                    'subnet_mask': ip_match.group(2),
-                    'status': 'up' if not 'shutdown' in interface_config else 'down'
-                })
+            # Interface IP address
+            elif current_interface and line.startswith('ip address'):
+                parts = line.split()
+                if len(parts) >= 4:
+                    current_interface['ip_address'] = parts[2]
+                    current_interface['subnet_mask'] = parts[3]
+                    current_interface['status'] = 'up'
+            
+            # BGP neighbor configuration
+            elif current_interface and line.startswith('neighbor'):
+                parts = line.split()
+                if len(parts) >= 2:
+                    current_interface['neighbor'] = {
+                        'device': parts[1],
+                        'interface': parts[1].split('.')[-1] if '.' in parts[1] else ''
+                    }
+            
+            # End of interface configuration
+            elif line == '!' and current_interface:
+                interfaces.append(current_interface)
+                current_interface = None
+        
+        # Add the last interface if exists
+        if current_interface:
+            interfaces.append(current_interface)
         
         return interfaces
     
-    def _extract_bgp_neighbors(self, content: str) -> List[Dict[str, str]]:
+    def _extract_bgp_neighbors(self, content: str) -> List[Dict[str, Any]]:
         """Extract BGP neighbor information from configuration."""
         neighbors = []
-        bgp_section = self._extract_bgp_section(content)
+        in_bgp_section = False
         
-        if not bgp_section:
-            return neighbors
-        
-        # Extract neighbor configurations
-        neighbor_pattern = r'neighbor\s+(\S+)\s+peer-group\s+(\S+)'
-        for match in re.finditer(neighbor_pattern, bgp_section):
-            neighbor_ip = match.group(1)
-            peer_group = match.group(2)
+        for line in content.split('\n'):
+            line = line.strip()
             
-            # Extract remote AS
-            as_pattern = rf'neighbor\s+{peer_group}\s+remote-as\s+(\d+)'
-            as_match = re.search(as_pattern, bgp_section)
-            remote_as = as_match.group(1) if as_match else 'unknown'
+            # Start of BGP configuration
+            if line.startswith('router bgp'):
+                in_bgp_section = True
+                continue
             
-            # Extract update source
-            source_pattern = rf'neighbor\s+{neighbor_ip}\s+update-source\s+(\S+)'
-            source_match = re.search(source_pattern, bgp_section)
-            update_source = source_match.group(1) if source_match else None
+            # End of BGP configuration
+            elif line == '!' and in_bgp_section:
+                in_bgp_section = False
+                continue
             
-            neighbors.append({
-                'neighbor_ip': neighbor_ip,
-                'peer_group': peer_group,
-                'remote_as': remote_as,
-                'local_ip': update_source,
-                'neighbor_name': f'as{remote_as}router',
-                'neighbor_interface': 'Loopback0'
-            })
+            # BGP neighbor configuration
+            elif in_bgp_section and line.startswith('neighbor'):
+                parts = line.split()
+                if len(parts) >= 2:
+                    neighbor = {
+                        'ip': parts[1],
+                        'as': '',
+                        'interface': ''
+                    }
+                    
+                    # Look for AS number
+                    for next_line in content.split('\n'):
+                        if f'neighbor {neighbor["ip"]}' in next_line and 'remote-as' in next_line:
+                            neighbor['as'] = next_line.split('remote-as')[1].strip()
+                            break
+                    
+                    # Find interface with matching IP
+                    for interface in self._extract_interfaces(content):
+                        if interface['ip_address'] == neighbor['ip']:
+                            neighbor['interface'] = interface['name']
+                            break
+                    
+                    neighbors.append(neighbor)
         
         return neighbors
     

@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Network Verification System</title>
+    <link rel="stylesheet" href="css/style.css">
+    <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <h1>Network Verification System</h1>
+        
+        <!-- Upload Section -->
+        <div class="upload-section">
+            <h2>Upload Configuration Files</h2>
+            <form id="upload-form" enctype="multipart/form-data">
+                <div class="file-input-container">
+                    <input type="file" name="files" multiple accept=".cfg,.txt" id="file-input">
+                    <button type="submit" id="upload-button">Upload</button>
+                </div>
+            </form>
+        </div>
+
+        <!-- Topology Display Section -->
+        <div class="topology-section">
+            <h2>Network Topology</h2>
+            <div id="networkGraph" class="network-graph"></div>
+        </div>
+
+        <!-- Verification Controls -->
+        <div class="verification-controls">
+            <h2>Verification</h2>
+            <div class="node-selection">
+                <div class="node-info">
+                    <span class="node-label">Source Node:</span>
+                    <span id="source-node">Not selected</span>
+                    <button class="clear-btn" onclick="clearSourceNode()">Clear</button>
+                </div>
+                <div class="node-info">
+                    <span class="node-label">Target Node:</span>
+                    <span id="target-node">Not selected</span>
+                    <button class="clear-btn" onclick="clearTargetNode()">Clear</button>
+                </div>
+            </div>
+            <div class="verification-actions">
+                <button id="verify-reachability" class="verify-btn" disabled>Verify Reachability</button>
+            </div>
+        </div>
+
+        <!-- Results Section -->
+        <div class="results-section" style="display: none;">
+            <h2>Verification Results</h2>
+            <div id="results"></div>
+        </div>
+    </div>
+    <script src="js/main.js"></script>
+</body>
+</html> 

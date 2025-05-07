@@ -53,13 +53,13 @@ class ReportGenerator:
             }
             
             # Add detailed analysis for each check
-            report['analysis'] = {
-                'reachability': self._analyze_reachability(results),
-                'isolation': self._analyze_isolation(results),
-                'bgp_peering': self._analyze_bgp_peering(results),
-                'acl_consistency': self._analyze_acl_consistency(results),
-                'route_table': self._analyze_route_table(results)
-            }
+            report['analysis'] = {}
+            for check_name, check_data in results.get('checks', {}).items():
+                report['analysis'][check_name] = {
+                    'status': check_data.get('status', 'UNKNOWN'),
+                    'description': check_data.get('description', ''),
+                    'details': check_data.get('details', {})
+                }
             
             # Write report to file
             with open(report_path, 'w') as f:

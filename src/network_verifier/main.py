@@ -5,7 +5,7 @@ Main FastAPI application for the Network Verifier system.
 from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 import os
 from pathlib import Path
@@ -17,6 +17,7 @@ from .data_layer.config_loader import ConfigLoader
 from .verification_layer.verification_engine import VerificationEngine
 from .presentation_layer.report_generator import ReportGenerator
 from .model_layer.topology_builder import TopologyBuilder
+from pydantic import BaseModel
 
 # Configure logging
 logging.basicConfig(
@@ -47,24 +48,52 @@ Path("configs").mkdir(exist_ok=True)
 Path("snapshots").mkdir(exist_ok=True)
 Path("reports").mkdir(exist_ok=True)
 
+class ReachabilityRequest(BaseModel):
+    source: str
+    target: str
+
+class IsolationRequest(BaseModel):
+    source: str
+    target: str
+
+class PathLocateRequest(BaseModel):
+    source: str
+    target: str
+
+class DisjointPathRequest(BaseModel):
+    source: str
+    target: str
+    mode: str = "node"  # 'node' or 'edge'
+
+class LoopDetectionRequest(BaseModel):
+    mode: str = "global"  # 'global' or 'node'
+    node: Optional[str] = None
+
 @app.get("/", response_class=HTMLResponse)
-async def home(request: Request):
-    """Render the home page."""
+async def read_root(request: Request):
+    """Render the main page."""
     return templates.TemplateResponse("index.html", {"request": request})
 
 @app.post("/upload")
 async def upload_config(files: List[UploadFile] = File(..., description="Multiple configuration files")):
     """Handle configuration file upload and verification."""
     try:
+        logger.info("Received upload request")
+        
         if not files:
+            logger.error("No files were uploaded")
             raise HTTPException(status_code=400, detail="No files were uploaded")
             
         configs = {}
+        saved_files = []
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
         # Process each uploaded file
         for file in files:
+            logger.info(f"Processing file: {file.filename}")
+            
             if not file.filename.endswith(('.cfg', '.txt')):
+                logger.error(f"Invalid file type: {file.filename}")
                 raise HTTPException(
                     status_code=400,
                     detail=f"Invalid file type: {file.filename}. Only .cfg and .txt files are allowed."
@@ -75,52 +104,35 @@ async def upload_config(files: List[UploadFile] = File(..., description="Multipl
             with open(file_path, "wb") as f:
                 content = await file.read()
                 f.write(content)
-            logger.info(f"Received file upload request: {file.filename}")
             logger.info(f"Saved uploaded file to: {file_path}")
+            
+            saved_files.append(file_path)
             
             # Load configuration
             loader = ConfigLoader()
             file_configs = loader.load_configs(str(file_path))
             configs.update(file_configs)
+            logger.info(f"Loaded configurations from: {file.filename}")
         
         if not configs:
+            logger.error("No valid configurations were found")
             raise HTTPException(status_code=400, detail="No valid configurations were found in the uploaded files")
         
-        # Create snapshot
-        snapshot_path = loader.create_snapshot(configs, f"snapshot_{timestamp}")
+        # Create snapshot with saved file paths
+        snapshot_path = f"snapshots/snapshot_{timestamp}.json"
+        snapshot_data = {
+            "timestamp": timestamp,
+            "files": saved_files,
+            "configs": configs
+        }
+        with open(snapshot_path, "w") as f:
+            json.dump(snapshot_data, f, indent=2)
         logger.info(f"Created snapshot at: {snapshot_path}")
-        
-        # Try to run verification with Batfish, fallback to local verification if failed
-        engine = VerificationEngine()
-        try:
-            verification_results = engine.verify_network_properties(f"snapshot_{timestamp}", {
-                "reachability": {"source": "any", "destination": "any"},
-                "isolation": {"source": "any", "destination": "any"},
-                "forwarding_loops": {},
-                "bgp_peering": {},
-                "acl_consistency": {},
-                "route_table": {}
-            })
-            logger.info("Completed network verification with Batfish")
-        except Exception as e:
-            logger.warning(f"Batfish verification failed: {str(e)}")
-            logger.info("Falling back to local verification")
-            verification_results = engine.verify_network_properties_local(configs)
-            logger.info("Completed local network verification")
         
         # Build topology
         topology_builder = TopologyBuilder()
         topology = topology_builder.build_topology(configs)
         logger.info("Built network topology")
-        
-        # Generate report
-        generator = ReportGenerator()
-        report_path = generator.generate_report(verification_results, f"snapshot_{timestamp}")
-        logger.info(f"Generated report at: {report_path}")
-        
-        # Prepare response
-        with open(report_path, "r") as f:
-            report_content = json.load(f)
         
         # Format topology data for vis.js
         formatted_topology = {
@@ -146,15 +158,15 @@ async def upload_config(files: List[UploadFile] = File(..., description="Multipl
             ]
         }
         
+        logger.info("Sending response with topology data")
         return JSONResponse({
             "status": "success",
-            "message": "Configurations uploaded and verified successfully",
-            "report_path": str(report_path),
-            "report": report_content,
+            "message": "Configurations uploaded successfully",
             "topology": formatted_topology
         })
         
     except HTTPException as e:
+        logger.error(f"HTTP Exception: {str(e)}")
         raise e
     except Exception as e:
         logger.error(f"Error handling upload: {str(e)}")
@@ -191,4 +203,252 @@ async def http_exception_handler(request: Request, exc: HTTPException):
     return JSONResponse(
         status_code=exc.status_code,
         content={"detail": exc.detail}
-    ) 
+    )
+
+@app.post("/verify-reachability")
+async def verify_reachability(request: ReachabilityRequest):
+    try:
+        # Get the latest snapshot
+        snapshot_dir = Path("snapshots")
+        snapshots = sorted(snapshot_dir.glob("snapshot_*.json"), key=lambda x: x.stat().st_mtime)
+        if not snapshots:
+            raise HTTPException(status_code=404, detail="No network configuration found")
+        
+        latest_snapshot = snapshots[-1]
+        with open(latest_snapshot, "r") as f:
+            snapshot_data = json.load(f)
+        
+        # Get configuration files from snapshot
+        config_files = snapshot_data.get("files", [])
+        if not config_files:
+            raise HTTPException(status_code=404, detail="No configuration files found in snapshot")
+        
+        # Initialize verification engine
+        verification_engine = VerificationEngine(use_batfish=False)
+        
+        # Verify reachability
+        result = verification_engine.verify_reachability(
+            request.source,
+            request.target,
+            config_files
+        )
+        
+        # Generate report
+        report = {
+            "summary": {
+                "overall_status": "PASS" if result["reachable"] else "FAIL",
+                "total_checks": 1,
+                "passed_checks": 1 if result["reachable"] else 0,
+                "failed_checks": 0 if result["reachable"] else 1,
+                "error_checks": 0
+            },
+            "analysis": {
+                "reachability": {
+                    "status": "PASS" if result["reachable"] else "FAIL",
+                    "description": f"Reachability check between {request.source} and {request.target}",
+                    "details": {
+                        "source": request.source,
+                        "target": request.target,
+                        "reachable": result["reachable"],
+                        "path": result.get("path", []),
+                        "reason": result.get("reason", "Unknown")
+                    }
+                }
+            }
+        }
+        
+        return {"status": "success", "report": report}
+        
+    except Exception as e:
+        logger.error(f"Error verifying reachability: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/verify-isolation")
+async def verify_isolation(request: IsolationRequest):
+    try:
+        # Get the latest snapshot
+        snapshot_dir = Path("snapshots")
+        snapshots = sorted(snapshot_dir.glob("snapshot_*.json"), key=lambda x: x.stat().st_mtime)
+        if not snapshots:
+            raise HTTPException(status_code=404, detail="No network configuration found")
+        latest_snapshot = snapshots[-1]
+        with open(latest_snapshot, "r") as f:
+            snapshot_data = json.load(f)
+        config_files = snapshot_data.get("files", [])
+        if not config_files:
+            raise HTTPException(status_code=404, detail="No configuration files found in snapshot")
+        # Initialize verification engine
+        verification_engine = VerificationEngine(use_batfish=False)
+        # Verify reachability
+        result = verification_engine.verify_reachability(
+            request.source,
+            request.target,
+            config_files
+        )
+        # 逻辑反转：有路径为FAIL，无路径为PASS
+        isolated = not result["reachable"]
+        report = {
+            "summary": {
+                "overall_status": "PASS" if isolated else "FAIL",
+                "total_checks": 1,
+                "passed_checks": 1 if isolated else 0,
+                "failed_checks": 0 if isolated else 1,
+                "error_checks": 0
+            },
+            "analysis": {
+                "isolation": {
+                    "status": "PASS" if isolated else "FAIL",
+                    "description": f"Isolation check between {request.source} and {request.target}",
+                    "details": {
+                        "source": request.source,
+                        "target": request.target,
+                        "isolated": isolated,
+                        "path": result.get("path", []),
+                        "reason": result.get("reason", "")
+                    }
+                }
+            }
+        }
+        return {"status": "success", "report": report}
+    except Exception as e:
+        logger.error(f"Error verifying isolation: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/snapshots")
+async def list_snapshots():
+    snapshot_dir = Path("snapshots")
+    snapshots = sorted(snapshot_dir.glob("snapshot_*.json"), key=lambda x: x.stat().st_mtime)
+    snapshot_list = []
+    for snap in snapshots:
+        with open(snap, "r") as f:
+            data = json.load(f)
+        snapshot_list.append({
+            "id": snap.stem,  # e.g. snapshot_20240505_123456
+            "timestamp": data.get("timestamp", ""),
+            "files": data.get("files", [])
+        })
+    return {"snapshots": snapshot_list}
+
+@app.get("/load-snapshot/{snapshot_id}")
+async def load_snapshot(snapshot_id: str):
+    try:
+        snapshot_path = Path("snapshots") / f"{snapshot_id}.json"
+        if not snapshot_path.exists():
+            raise HTTPException(status_code=404, detail="Snapshot not found")
+        with open(snapshot_path, "r") as f:
+            snapshot_data = json.load(f)
+        configs = snapshot_data.get("configs", {})
+        # Build topology
+        topology_builder = TopologyBuilder()
+        topology = topology_builder.build_topology(configs)
+        formatted_topology = {
+            "nodes": [
+                {
+                    "id": node["id"],
+                    "label": node["label"],
+                    "title": node["title"],
+                    "group": node["group"],
+                    "value": node["value"]
+                }
+                for node in topology["nodes"]
+            ],
+            "edges": [
+                {
+                    "id": edge["id"],
+                    "from": edge["from"],
+                    "to": edge["to"],
+                    "label": edge["label"],
+                    "title": edge["title"]
+                }
+                for edge in topology["edges"]
+            ]
+        }
+        return {"status": "success", "topology": formatted_topology}
+    except Exception as e:
+        logger.error(f"Error loading snapshot: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/locate-path")
+async def locate_path(request: PathLocateRequest):
+    try:
+        # Get the latest snapshot
+        snapshot_dir = Path("snapshots")
+        snapshots = sorted(snapshot_dir.glob("snapshot_*.json"), key=lambda x: x.stat().st_mtime)
+        if not snapshots:
+            raise HTTPException(status_code=404, detail="No network configuration found")
+        latest_snapshot = snapshots[-1]
+        with open(latest_snapshot, "r") as f:
+            snapshot_data = json.load(f)
+        config_files = snapshot_data.get("files", [])
+        if not config_files:
+            raise HTTPException(status_code=404, detail="No configuration files found in snapshot")
+        # Initialize verification engine
+        verification_engine = VerificationEngine(use_batfish=False)
+        # 查找所有路径
+        result = verification_engine.find_all_paths(
+            request.source,
+            request.target,
+            config_files
+        )
+        return {
+            "status": "success",
+            "found": result.get("found", False),
+            "paths": result.get("paths", []),
+            "best_path": result.get("best_path", []),
+            "reason": result.get("reason", "")
+        }
+    except Exception as e:
+        logger.error(f"Error locating path: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/verify-disjoint-paths")
+async def verify_disjoint_paths(request: DisjointPathRequest):
+    try:
+        # Get the latest snapshot
+        snapshot_dir = Path("snapshots")
+        snapshots = sorted(snapshot_dir.glob("snapshot_*.json"), key=lambda x: x.stat().st_mtime)
+        if not snapshots:
+            raise HTTPException(status_code=404, detail="No network configuration found")
+        latest_snapshot = snapshots[-1]
+        with open(latest_snapshot, "r") as f:
+            snapshot_data = json.load(f)
+        config_files = snapshot_data.get("files", [])
+        if not config_files:
+            raise HTTPException(status_code=404, detail="No configuration files found in snapshot")
+        verification_engine = VerificationEngine(use_batfish=False)
+        result = verification_engine.find_disjoint_paths(
+            request.source,
+            request.target,
+            config_files,
+            mode=request.mode,
+            max_paths=2
+        )
+        return {
+            "status": "success",
+            "found": result.get("found", False),
+            "paths": result.get("paths", []),
+            "type": result.get("type", request.mode),
+            "reason": result.get("reason", "")
+        }
+    except Exception as e:
+        logger.error(f"Error verifying disjoint paths: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/verify-forwarding-loops")
+async def verify_forwarding_loops(request: LoopDetectionRequest):
+    try:
+        snapshot_dir = Path("snapshots")
+        snapshots = sorted(snapshot_dir.glob("snapshot_*.json"), key=lambda x: x.stat().st_mtime)
+        if not snapshots:
+            raise HTTPException(status_code=404, detail="No network configuration found")
+        latest_snapshot = snapshots[-1]
+        with open(latest_snapshot, "r") as f:
+            snapshot_data = json.load(f)
+        configs = snapshot_data.get("configs", {})
+        engine = VerificationEngine(use_batfish=False)
+        params = {"mode": request.mode, "node": request.node}
+        result = engine.check_forwarding_loops(params, configs)
+        return result
+    except Exception as e:
+        logger.error(f"Error verifying forwarding loops: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error verifying forwarding loops: {str(e)}") 
