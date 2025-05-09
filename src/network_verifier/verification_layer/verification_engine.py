@@ -269,19 +269,25 @@ class VerificationEngine:
             # 环路收集
             cycles = set()
             def canonical_cycle(path):
+                # path: [A, B, C, A]
                 labels = [id2label[i] for i in path]
-                min_idx = labels.index(min(labels))
-                norm1 = labels[min_idx:] + labels[:min_idx]
-                norm2 = list(reversed(labels))
+                # 去掉最后一个起点，做规范化，再补回起点
+                labels_main = labels[:-1]
+                min_idx = labels_main.index(min(labels_main))
+                norm1 = labels_main[min_idx:] + labels_main[:min_idx]
+                norm1.append(norm1[0])  # 补回起点
+                norm2 = list(reversed(labels_main))
                 min_idx2 = norm2.index(min(norm2))
                 norm2 = norm2[min_idx2:] + norm2[:min_idx2]
+                norm2.append(norm2[0])
                 return tuple(norm1) if tuple(norm1) < tuple(norm2) else tuple(norm2)
             def dfs(start, current, path, visited, parent):
                 for neighbor in graph[current]:
                     if neighbor == parent:
                         continue
                     if neighbor == start and len(path) >= 3:
-                        cycle = canonical_cycle(path)
+                        # 补上起点，确保环路首尾一致
+                        cycle = canonical_cycle(path + [start])
                         cycles.add(cycle)
                     elif neighbor not in visited:
                         visited.add(neighbor)
