@@ -1199,10 +1199,19 @@ document.addEventListener('DOMContentLoaded', function() {
 
 // 查看批次详情
 function findConfigForFile(configs, fname) {
-    const shortName = fname.split('/').pop();
+    const shortName = fname.split('/').pop(); // 20250506_115935_as3border1.cfg
+    // 提取设备名（去掉前缀和后缀）
+    let deviceName = shortName;
+    if (/_([^_]+)\.cfg$/.test(shortName)) {
+        deviceName = shortName.match(/_([^_]+)\.cfg$/)[1];
+    } else if (shortName.endsWith('.cfg')) {
+        deviceName = shortName.replace('.cfg', '');
+    }
     if (configs[fname]) return configs[fname];
     if (configs[shortName]) return configs[shortName];
+    if (configs[deviceName]) return configs[deviceName];
     for (const key in configs) {
+        if (key.includes(deviceName)) return configs[key];
         if (key.includes(shortName)) return configs[key];
     }
     return null;
