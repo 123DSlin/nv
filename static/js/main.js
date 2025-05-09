@@ -1153,4 +1153,246 @@ function renderLoopDetectionResult(result) {
     } else {
         resultDiv.innerHTML = '<div class="result-card fail">检测失败或无数据</div>';
     }
-} 
+}
+
+// 快照管理弹窗逻辑
+function showSnapshotMgrModal() {
+    const modal = document.getElementById('snapshot-mgr-modal');
+    const listDiv = document.getElementById('snapshot-mgr-list');
+    listDiv.innerHTML = '<div style="text-align:center;padding:2em;">加载中...</div>';
+    modal.style.display = 'flex';
+    fetch('/snapshots').then(res => res.json()).then(data => {
+        if (!data.snapshots || data.snapshots.length === 0) {
+            listDiv.innerHTML = '<div style="text-align:center;color:#888;">暂无快照</div>';
+            return;
+        }
+        // 按timestamp分组
+        const batchMap = {};
+        data.snapshots.forEach(snap => {
+            if (!batchMap[snap.timestamp]) batchMap[snap.timestamp] = [];
+            batchMap[snap.timestamp].push(snap);
+        });
+        let html = '';
+        Object.keys(batchMap).sort((a,b)=>b.localeCompare(a)).forEach(ts => {
+            const snaps = batchMap[ts];
+            html += `<div class="batch-group" style="border:1px solid #e5e7eb;border-radius:6px;margin-bottom:1.2em;padding:1em 1.2em;">
+                <div style="display:flex;align-items:center;justify-content:space-between;">
+                    <div><b>批次时间：</b>${ts} <span style="color:#888;font-size:13px;">（${snaps.length}个快照）</span></div>
+                    <div>
+                        <button class="verify-btn" onclick="viewBatchSnapshots('${ts}')">查看详情</button>
+                        <button class="verify-btn" onclick="deleteBatchSnapshots('${ts}', this)">批量删除</button>
+                    </div>
+                </div>
+            </div>`;
+        });
+        listDiv.innerHTML = html;
+    });
+}
+window.showSnapshotMgrModal = showSnapshotMgrModal;
+
+document.addEventListener('DOMContentLoaded', function() {
+    document.getElementById('snapshot-mgr-btn').onclick = showSnapshotMgrModal;
+    document.getElementById('close-snapshot-mgr').onclick = function() {
+        document.getElementById('snapshot-mgr-modal').style.display = 'none';
+    };
+});
+
+// 查看批次详情
+function findConfigForFile(configs, fname) {
+    const shortName = fname.split('/').pop();
+    if (configs[fname]) return configs[fname];
+    if (configs[shortName]) return configs[shortName];
+    for (const key in configs) {
+        if (key.includes(shortName)) return configs[key];
+    }
+    return null;
+}
+
+// 添加全局内容弹窗
+if (!document.getElementById('snapshot-content-modal')) {
+    const modal = document.createElement('div');
+    modal.id = 'snapshot-content-modal';
+    modal.style = 'display:none;position:fixed;z-index:99999;left:0;top:0;width:100vw;height:100vh;background:rgba(0,0,0,0.3);align-items:center;justify-content:center;';
+    modal.innerHTML = `<div class="modal-content" style="background:#fff;padding:2rem 2.5rem;border-radius:8px;min-width:600px;max-width:90vw;max-height:80vh;overflow:auto;box-shadow:0 8px 32px rgba(0,0,0,0.18);">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;">
+            <h2 style="margin:0;font-size:1.2em;">文件内容</h2>
+            <button id="close-snapshot-content-modal" style="font-size:1.5rem;background:none;border:none;cursor:pointer;">×</button>
+        </div>
+        <div id="snapshot-content-modal-body"></div>
+    </div>`;
+    document.body.appendChild(modal);
+    document.getElementById('close-snapshot-content-modal').onclick = function() {
+        modal.style.display = 'none';
+    };
+}
+
+window.viewBatchSnapshots = function(ts) {
+    // 先收起所有已展开详情
+    document.querySelectorAll('.batch-detail-area').forEach(e => e.remove());
+    // 找到当前批次卡片
+    const batchCard = Array.from(document.querySelectorAll('.batch-group')).find(card => card.innerHTML.includes(ts));
+    if (!batchCard) return;
+    // 创建详情区容器
+    const detailDiv = document.createElement('div');
+    detailDiv.className = 'batch-detail-area';
+    detailDiv.style = 'margin-top:1em;padding:1.5em 1em;background:#f8fafc;border-radius:8px;border:1px solid #e5e7eb;';
+    detailDiv.innerHTML = '<div style="text-align:center;padding:2em;">加载中...</div>';
+    batchCard.parentNode.insertBefore(detailDiv, batchCard.nextSibling);
+    fetch(`/snapshots/batch/${ts}`).then(res=>res.json()).then(data=>{
+        if (!data.snapshots || data.snapshots.length === 0) {
+            detailDiv.innerHTML = '<div style="color:#888;">该批次暂无快照</div>';
+            return;
+        }
+        // 只展示第一个快照（通常一个批次只有一个快照）
+        const snap = data.snapshots[0];
+        const files = snap.files || [];
+        const configs = snap.content && snap.content.configs ? snap.content.configs : {};
+        let html = `<button class="verify-btn" style="margin-bottom:1em;" onclick="this.closest('.batch-detail-area').remove()">关闭详情</button>`;
+        if (files.length === 0) {
+            html += '<div style="color:#888;">该快照下无文件</div>';
+            detailDiv.innerHTML = html;
+            return;
+        }
+        html += '<div style="display:flex;gap:2em;">';
+        // 文件名列表
+        html += '<div style="min-width:260px;">';
+        html += '<div style="font-weight:bold;margin-bottom:0.5em;">文件列表</div>';
+        html += '<ul id="snapshot-file-list" style="list-style:none;padding:0;">';
+        files.forEach((fname, idx) => {
+            const shortName = fname.split('/').pop();
+            html += `<li style="margin-bottom:0.5em;display:flex;align-items:center;justify-content:space-between;gap:0.5em;">
+                <span class="snapshot-file-label" data-fname="${fname}" style="color:#2563eb;cursor:pointer;text-decoration:underline;">${shortName}</span>
+                <div style="display:flex;gap:0.5em;">
+                    <button class="verify-btn" style="padding:0.2em 0.8em;font-size:0.9em;" onclick="window._showSnapshotFileContent && window._showSnapshotFileContent('${fname}', this)">查看</button>
+                    <button class="verify-btn" style="padding:0.2em 0.8em;font-size:0.9em;" onclick="deleteSingleSnapshot('${snap.id}','${fname}',this)">删除</button>
+                </div>
+            </li>`;
+        });
+        html += '</ul></div>';
+        // 文件内容区
+        html += '<div style="flex:1;min-width:0;">';
+        html += '<div id="snapshot-file-content" style="background:#f8fafc;color:#1e40af;font-size:13px;max-height:60vh;overflow:auto;border-radius:6px;padding:1em;"></div>';
+        html += '</div>';
+        html += '</div>';
+        detailDiv.innerHTML = html;
+        // 绑定"查看"按钮事件，弹窗显示内容
+        window._showSnapshotFileContent = function(fname, btn) {
+            let config = findConfigForFile(configs, fname);
+            const modal = document.getElementById('snapshot-content-modal');
+            const modalBody = document.getElementById('snapshot-content-modal-body');
+            if (config) {
+                modalBody.innerHTML = renderConfigContent(config);
+            } else {
+                modalBody.innerHTML = '';
+            }
+            modal.style.display = 'flex';
+        };
+        // 也允许点击文件名高亮内容
+        detailDiv.querySelectorAll('.snapshot-file-label').forEach(label => {
+            label.onclick = function(e) {
+                const fname = this.getAttribute('data-fname');
+                window._showSnapshotFileContent(fname);
+            };
+        });
+    });
+};
+
+// 查看单个快照内容
+window.viewSnapshotDetail = function(snapId) {
+    const listDiv = document.getElementById('snapshot-mgr-list');
+    listDiv.innerHTML = '<div style="text-align:center;padding:2em;">加载中...</div>';
+    fetch(`/snapshot/${snapId}`).then(res=>res.json()).then(data=>{
+        // 展示文件列表和内容
+        const files = data.files || [];
+        const configs = data.configs || {};
+        let html = `<button class="verify-btn" style="margin-bottom:1em;" onclick="showSnapshotMgrModal()">返回批次列表</button>`;
+        if (files.length === 0) {
+            html += '<div style="color:#888;">该快照下无文件</div>';
+            listDiv.innerHTML = html;
+            return;
+        }
+        html += '<div style="display:flex;gap:2em;">';
+        // 文件名列表
+        html += '<div style="min-width:220px;">';
+        html += '<div style="font-weight:bold;margin-bottom:0.5em;">文件列表</div>';
+        html += '<ul id="snapshot-file-list" style="list-style:none;padding:0;">';
+        files.forEach((fname, idx) => {
+            const shortName = fname.split('/').pop();
+            html += `<li style="margin-bottom:0.5em;"><a href="#" class="snapshot-file-link" data-fname="${fname}" style="color:#2563eb;text-decoration:underline;cursor:pointer;">${shortName}</a></li>`;
+        });
+        html += '</ul></div>';
+        // 文件内容区
+        html += '<div style="flex:1;min-width:0;">';
+        html += '<div id="snapshot-file-content" style="background:#f8fafc;color:#1e40af;font-size:13px;max-height:60vh;overflow:auto;border-radius:6px;padding:1em;">';
+        // 默认显示第一个文件内容，增强查找
+        const firstFile = files[0];
+        let config = findConfigForFile(configs, firstFile);
+        if (config) {
+            html += renderConfigContent(config);
+        } else {
+            html += '';
+        }
+        html += '</div></div>';
+        html += '</div>';
+        listDiv.innerHTML = html;
+        // 绑定点击事件，增强查找
+        document.querySelectorAll('.snapshot-file-link').forEach(link => {
+            link.onclick = function(e) {
+                e.preventDefault();
+                const fname = this.getAttribute('data-fname');
+                const contentDiv = document.getElementById('snapshot-file-content');
+                let config = findConfigForFile(configs, fname);
+                if (config) {
+                    contentDiv.innerHTML = renderConfigContent(config);
+                } else {
+                    contentDiv.innerHTML = '';
+                }
+            };
+        });
+    });
+};
+
+// 渲染配置内容，优先显示raw_config，否则显示全部内容
+function renderConfigContent(configObj) {
+    if (configObj.raw_config && configObj.raw_config.trim()) {
+        return `<pre>${escapeHtml(configObj.raw_config)}</pre>`;
+    } else {
+        return `<pre>${escapeHtml(JSON.stringify(configObj, null, 2))}</pre>`;
+    }
+}
+
+// 防止XSS
+function escapeHtml(str) {
+    return String(str).replace(/[&<>"']/g, function (s) {
+        return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;','\'':'&#39;'}[s]);
+    });
+}
+
+// 批量删除快照
+window.deleteBatchSnapshots = function(ts, btn) {
+    if (!confirm('确定要批量删除该批次下的所有快照吗？')) return;
+    btn.disabled = true;
+    btn.textContent = '删除中...';
+    fetch(`/snapshots/batch/${ts}`, {method:'DELETE'}).then(res=>res.json()).then(data=>{
+        alert(`已删除：${data.deleted.length} 个快照`);
+        showSnapshotMgrModal();
+    }).catch(()=>{
+        alert('删除失败');
+        btn.disabled = false;
+        btn.textContent = '批量删除';
+    });
+};
+// 删除单个快照
+window.deleteSingleSnapshot = function(snapId, fname, btn) {
+    if (!confirm('确定要删除该快照吗？')) return;
+    btn.disabled = true;
+    btn.textContent = '删除中...';
+    fetch(`/snapshot/${snapId}`, {method:'DELETE'}).then(res=>res.json()).then(data=>{
+        alert('删除成功');
+        showSnapshotMgrModal();
+    }).catch(()=>{
+        alert('删除失败');
+        btn.disabled = false;
+        btn.textContent = '删除';
+    });
+}; 

@@ -2,7 +2,7 @@
 Main FastAPI application for the Network Verifier system.
 """
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, Request
+from fastapi import FastAPI, UploadFile, File, HTTPException, Request, Body
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
@@ -451,4 +451,82 @@ async def verify_forwarding_loops(request: LoopDetectionRequest):
         return result
     except Exception as e:
         logger.error(f"Error verifying forwarding loops: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error verifying forwarding loops: {str(e)}") 
+        raise HTTPException(status_code=500, detail=f"Error verifying forwarding loops: {str(e)}")
+
+@app.get("/snapshot/{snapshot_id}")
+async def get_snapshot(snapshot_id: str):
+    """查看单个快照内容"""
+    snapshot_path = Path("snapshots") / f"{snapshot_id}.json"
+    if not snapshot_path.exists():
+        raise HTTPException(status_code=404, detail="Snapshot not found")
+    with open(snapshot_path, "r") as f:
+        return json.load(f)
+
+@app.delete("/snapshot/{snapshot_id}")
+async def delete_snapshot(snapshot_id: str, file: Optional[str] = Body(default=None)):
+    """删除指定快照或快照中的单个文件"""
+    snapshot_path = Path("snapshots") / f"{snapshot_id}.json"
+    if not snapshot_path.exists():
+        raise HTTPException(status_code=404, detail="Snapshot not found")
+    if file:
+        # 删除快照中的单个文件
+        try:
+            with open(snapshot_path, "r") as f:
+                data = json.load(f)
+            files = data.get("files", [])
+            configs = data.get("configs", {})
+            # 支持完整路径和短文件名
+            short_file = file.split("/")[-1]
+            files = [f for f in files if f != file and f.split("/")[-1] != short_file]
+            configs.pop(file, None)
+            configs.pop(short_file, None)
+            data["files"] = files
+            data["configs"] = configs
+            with open(snapshot_path, "w") as f:
+                json.dump(data, f, indent=2)
+            return {"status": "success", "message": f"File {file} deleted from snapshot {snapshot_id}."}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to delete file from snapshot: {str(e)}")
+    else:
+        # 删除整个快照
+        try:
+            snapshot_path.unlink()
+            return {"status": "success", "message": f"Snapshot {snapshot_id} deleted."}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to delete snapshot: {str(e)}")
+
+@app.get("/snapshots/batch/{timestamp}")
+async def get_snapshots_by_batch(timestamp: str):
+    """查看同一批次（timestamp）下所有快照内容"""
+    snapshot_dir = Path("snapshots")
+    batch_files = list(snapshot_dir.glob(f"snapshot_{timestamp}*.json"))
+    if not batch_files:
+        raise HTTPException(status_code=404, detail="No snapshots found for this batch")
+    batch_snapshots = []
+    for snap in batch_files:
+        with open(snap, "r") as f:
+            data = json.load(f)
+        batch_snapshots.append({
+            "id": snap.stem,
+            "timestamp": data.get("timestamp", ""),
+            "files": data.get("files", []),
+            "content": data
+        })
+    return {"snapshots": batch_snapshots}
+
+@app.delete("/snapshots/batch/{timestamp}")
+async def delete_snapshots_by_batch(timestamp: str):
+    """批量删除同一批次（timestamp）下所有快照"""
+    snapshot_dir = Path("snapshots")
+    batch_files = list(snapshot_dir.glob(f"snapshot_{timestamp}*.json"))
+    if not batch_files:
+        raise HTTPException(status_code=404, detail="No snapshots found for this batch")
+    deleted = []
+    errors = []
+    for snap in batch_files:
+        try:
+            snap.unlink()
+            deleted.append(snap.stem)
+        except Exception as e:
+            errors.append({"id": snap.stem, "error": str(e)})
+    return {"deleted": deleted, "errors": errors} 
