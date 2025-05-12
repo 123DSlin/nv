@@ -308,7 +308,9 @@ class VerificationEngine:
             else:
                 logger.error(f"[LoopCheck] Unknown mode: {mode}")
                 return {"status": "ERROR", "message": f"Unknown mode: {mode}"}
-            loops_list = [list(c) for c in cycles]
+            # 再次用集合去重，防止同一环路被不同起点多次发现
+            unique_cycles = set(cycles)
+            loops_list = [list(c) for c in unique_cycles]
             logger.info(f"[LoopCheck] loops_list={loops_list}")
             return {
                 "status": "PASSED" if not loops_list else "FAILED",

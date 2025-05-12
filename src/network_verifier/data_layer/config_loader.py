@@ -38,7 +38,7 @@ class ConfigLoader:
         # Extract BGP neighbors
         bgp_neighbors = self._extract_bgp_neighbors(content)
         
-        # Update interfaces with neighbor information
+        # Update interfaces with neighbor information (BGP neighbor IP match)
         for interface in interfaces:
             for neighbor in bgp_neighbors:
                 if interface.get('ip_address') == neighbor.get('ip'):
@@ -55,6 +55,41 @@ class ConfigLoader:
         }
         
         self.configs[device_name] = config
+        
+        # --- IP邻居自动推断 ---
+        # 只有所有设备都加载完后再调用此逻辑（假设多次load_configs后再用self.configs）
+        # 这里每次只处理当前设备，但会遍历self.configs中所有设备
+        for this_dev, this_conf in self.configs.items():
+            for iface in this_conf.get('interfaces', []):
+                ip1 = iface.get('ip_address')
+                mask1 = iface.get('subnet_mask')
+                if not ip1 or not mask1:
+                    continue
+                # 跳过已有neighbor的接口（如BGP或手动指定）
+                if iface.get('neighbor') and iface['neighbor']:
+                    continue
+                for other_dev, other_conf in self.configs.items():
+                    if other_dev == this_dev:
+                        continue
+                    for oiface in other_conf.get('interfaces', []):
+                        ip2 = oiface.get('ip_address')
+                        mask2 = oiface.get('subnet_mask')
+                        if not ip2 or not mask2:
+                            continue
+                        if self._is_same_subnet(ip1, mask1, ip2, mask2):
+                            # 互为neighbor
+                            iface['neighbor'] = {
+                                'device': other_dev,
+                                'interface': oiface.get('name', ''),
+                                'ip_address': ip2
+                            }
+                            # 对端也加上neighbor（如果还没有）
+                            if not oiface.get('neighbor'):
+                                oiface['neighbor'] = {
+                                    'device': this_dev,
+                                    'interface': iface.get('name', ''),
+                                    'ip_address': ip1
+                                }
         return self.configs
     
     def _extract_interfaces(self, content: str) -> List[Dict[str, Any]]:
@@ -81,8 +116,15 @@ class ConfigLoader:
             elif current_interface and line.startswith('ip address'):
                 parts = line.split()
                 if len(parts) >= 4:
+                    # 标准写法 ip address <ip> <mask>
                     current_interface['ip_address'] = parts[2]
                     current_interface['subnet_mask'] = parts[3]
+                    current_interface['status'] = 'up'
+                elif len(parts) == 3 and '/' in parts[2]:
+                    # 支持 ip address <ip>/<prefix>
+                    ip, prefix = parts[2].split('/')
+                    current_interface['ip_address'] = ip
+                    current_interface['subnet_mask'] = self._cidr_to_mask(int(prefix))
                     current_interface['status'] = 'up'
             
             # BGP neighbor configuration
@@ -287,4 +329,17 @@ class ConfigLoader:
     def _cidr_to_mask(self, cidr: int) -> str:
         """Convert CIDR notation to subnet mask."""
         mask = (0xffffffff >> (32 - cidr)) << (32 - cidr)
-        return f"{(mask >> 24) & 0xff}.{(mask >> 16) & 0xff}.{(mask >> 8) & 0xff}.{mask & 0xff}" 
+        return f"{(mask >> 24) & 0xff}.{(mask >> 16) & 0xff}.{(mask >> 8) & 0xff}.{mask & 0xff}"
+    
+    def _is_same_subnet(self, ip1: str, mask1: str, ip2: str, mask2: str) -> bool:
+        """Check if two IP addresses are in the same subnet."""
+        try:
+            ip1_parts = [int(x) for x in ip1.split('.')]
+            mask1_parts = [int(x) for x in mask1.split('.')]
+            ip2_parts = [int(x) for x in ip2.split('.')]
+            mask2_parts = [int(x) for x in mask2.split('.')]
+            net1 = [ip1_parts[i] & mask1_parts[i] for i in range(4)]
+            net2 = [ip2_parts[i] & mask2_parts[i] for i in range(4)]
+            return net1 == net2
+        except:
+            return False 
